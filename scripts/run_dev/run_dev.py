@@ -15,7 +15,8 @@ import shlex
 from build_image_layers import (
     main as build_image_layers,
     check_docker_logins,
-    get_image_name)
+    get_image_name,
+    CONTAINER_ENGINE)
 from isaac_ros_common_config_utils import (
     get_isaac_ros_common_config_path,
     get_isaac_ros_common_config_values,
@@ -29,8 +30,11 @@ def validate_isaac_dir(isaac_dir):
 
 
 def check_user_in_docker_group():
+    """Check if user is in docker/podman group (for rootless container operations)."""
     output = subprocess.check_output(["groups", os.getenv("USER")], universal_newlines=True)
-    if "docker" not in output:
+    
+    # For Docker, check docker group
+    if CONTAINER_ENGINE == 'docker' and "docker" not in output:
         print(
             f"User {os.getenv('USER')} is not a member of the 'docker' group "
             "and cannot run docker commands without sudo."
@@ -41,23 +45,30 @@ def check_user_in_docker_group():
         )
         print("See: https://docs.docker.com/engine/install/linux-postinstall/")
         sys.exit(1)
+    # Podman typically runs rootless, so no group check needed
 
 
 def check_docker_running():
+    """Check if the container engine is running."""
     try:
-        subprocess.check_output(["docker", "ps"], stderr=subprocess.DEVNULL)
+        subprocess.check_output([CONTAINER_ENGINE, "ps"], stderr=subprocess.DEVNULL)
     except subprocess.CalledProcessError:
         print(
-            "Unable to run docker commands. If you have recently added $USER to "
-            "'docker' group, you may need to log out and log back in for it to take effect."
+            f"Unable to run {CONTAINER_ENGINE} commands. If you have recently added $USER to "
+            f"'{CONTAINER_ENGINE}' group, you may need to log out and log back in for it to take effect."
         )
-        print("Otherwise, please check your Docker installation.")
+        print(f"Otherwise, please check your {CONTAINER_ENGINE} installation.")
         sys.exit(1)
 
 
 def check_docker_buildx_containerd_cache_enabled():
+    """Check if buildx is available (Docker only)."""
+    # Podman doesn't use buildx, skip this check
+    if CONTAINER_ENGINE == 'podman':
+        return
+        
     try:
-        subprocess.check_output(["docker", "buildx", "inspect", "--bootstrap"])
+        subprocess.check_output([CONTAINER_ENGINE, "buildx", "inspect", "--bootstrap"])
     except subprocess.CalledProcessError:
         print(
             "Unable to detect docker buildx containerd cache. "
@@ -111,9 +122,10 @@ def check_lfs_files(isaac_dir):
 
 
 def remove_exited_container(container_name):
+    """Remove exited containers with the given name."""
     output = subprocess.check_output(
         [
-            "docker",
+            CONTAINER_ENGINE,
             "ps",
             "-a",
             "--quiet",
@@ -124,13 +136,14 @@ def remove_exited_container(container_name):
         ]
     )
     if output:
-        subprocess.run(["docker", "rm", container_name], stdout=subprocess.DEVNULL)
+        subprocess.run([CONTAINER_ENGINE, "rm", container_name], stdout=subprocess.DEVNULL)
 
 
 def attach_to_running_container(container_name):
+    """Attach to a running container if one exists."""
     output = subprocess.check_output(
         [
-            "docker",
+            CONTAINER_ENGINE,
             "ps",
             "-a",
             "--quiet",
@@ -143,13 +156,13 @@ def attach_to_running_container(container_name):
     if output:
         print(f"Attaching to running container: {container_name}")
         isaac_ros_ws = subprocess.check_output(
-            ["docker", "exec", container_name, "printenv", "ISAAC_ROS_WS"],
+            [CONTAINER_ENGINE, "exec", container_name, "printenv", "ISAAC_ROS_WS"],
             universal_newlines=True
         ).strip()
-        print(f"Docker workspace: {isaac_ros_ws}")
+        print(f"Container workspace: {isaac_ros_ws}")
         subprocess.run(
             [
-                "docker", "exec", "-i", "-t",
+                CONTAINER_ENGINE, "exec", "-i", "-t",
                 "-e", "TERM=xterm-256color",
                 "-e", "COLORTERM=truecolor",
                 "-e", "FORCE_COLOR=true",
@@ -168,14 +181,15 @@ def attach_to_running_container(container_name):
 
 
 def make_docker_image_available(base_name, cached_image_name):
+    """Pull an image and tag it with a local cache name."""
     pull_result = subprocess.run(
-        f"docker pull {base_name}",
+        f"{CONTAINER_ENGINE} pull {base_name}",
         shell=True,
         env={**os.environ, "TERM": "xterm-256color", "COLORTERM": "truecolor"}
     )
 
     local_image_result = subprocess.run(
-        ["docker", "image", "inspect", base_name],
+        [CONTAINER_ENGINE, "image", "inspect", base_name],
         capture_output=True,
         env={**os.environ, "TERM": "xterm-256color", "COLORTERM": "truecolor"}
     )
@@ -183,13 +197,13 @@ def make_docker_image_available(base_name, cached_image_name):
     if pull_result.returncode == 0 or local_image_result.returncode == 0:
         # Remove any existing cached image
         subprocess.run(
-            ["docker", "rmi", cached_image_name],
+            [CONTAINER_ENGINE, "rmi", cached_image_name],
             stderr=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL
         )
         # Tag the image as our cached image name
         tag_result = subprocess.run(
-            ["docker", "tag", base_name, cached_image_name]
+            [CONTAINER_ENGINE, "tag", base_name, cached_image_name]
         )
 
         return tag_result.returncode == 0
@@ -534,13 +548,13 @@ def main():
         # Check if cached image exists before using it
 
         cached_image_exists = subprocess.run(
-            ["docker", "image", "inspect", cached_image_name],
+            [CONTAINER_ENGINE, "image", "inspect", cached_image_name],
             capture_output=True
         ).returncode == 0
 
         if not cached_image_exists:
             print("No cached image found. "
-                  "Perhaps you cleaned docker cache, or you haven't yet "
+                  f"Perhaps you cleaned {CONTAINER_ENGINE} cache, or you haven't yet "
                   "run run_dev.py on this system?")
             sys.exit(1)
         base_name = cached_image_name

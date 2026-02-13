@@ -25,6 +25,55 @@ import yaml
 
 
 # -----------------------------------------------------------------------------
+# Container Engine Detection
+# -----------------------------------------------------------------------------
+def detect_container_engine():
+    """
+    Detect which container engine is available (docker or podman).
+    
+    Returns:
+        str: 'docker' if docker is available, 'podman' if only podman is available,
+             or 'docker' as default if neither is found (will fail later with clear error)
+    """
+    # Check for docker first (preferred if both are available)
+    try:
+        subprocess.run(['docker', '--version'], 
+                      capture_output=True, 
+                      check=True,
+                      timeout=5)
+        return 'docker'
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    
+    # Check for podman
+    try:
+        subprocess.run(['podman', '--version'], 
+                      capture_output=True, 
+                      check=True,
+                      timeout=5)
+        return 'podman'
+    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
+        pass
+    
+    # Default to docker (will fail later with appropriate error)
+    return 'docker'
+
+
+# Global variable to cache the detected engine
+CONTAINER_ENGINE = detect_container_engine()
+
+
+def supports_buildx():
+    """
+    Check if the container engine supports buildx.
+    
+    Returns:
+        bool: True if buildx is supported (Docker), False otherwise (Podman)
+    """
+    return CONTAINER_ENGINE == 'docker'
+
+
+# -----------------------------------------------------------------------------
 # Utility functions
 # -----------------------------------------------------------------------------
 def extract_env_vars(source_filepath, keys=None):
@@ -154,7 +203,7 @@ def docker_login(base_docker_registry_name):
 
 def check_docker_logins(base_docker_registry_names, fail_on_anon):
     """
-    Checks login status of specified Docker registries.
+    Checks login status of specified container registries.
     """
     for base_docker_registry_name in base_docker_registry_names:
         if docker_login(base_docker_registry_name):
@@ -164,8 +213,8 @@ def check_docker_logins(base_docker_registry_names, fail_on_anon):
     if fail_on_anon:
         registries_str = ', '.join(base_docker_registry_names)
         raise Exception(
-            f'Could not login to any of the specified docker registries: {registries_str}\n'
-            f'Please login using: docker login <registry>\n'
+            f'Could not login to any of the specified container registries: {registries_str}\n'
+            f'Please login using: {CONTAINER_ENGINE} login <registry>\n'
             f'Or use --no-cache flag to build without registry cache.'
         )
     return None
@@ -641,15 +690,113 @@ def resolve_dockerfiles(
 
 
 def check_docker_image_exists(image):
+    """Check if a container image exists in the registry."""
     try:
         run_shell(
-            f'docker manifest inspect {image}',
+            f'{CONTAINER_ENGINE} manifest inspect {image}',
             capture_output=True,
             check=True
         )
         return True
     except subprocess.CalledProcessError:
         return False
+
+
+def build_with_podman(build_plan, docker_bake_dict, build_target_names, 
+                      config, no_cache, verbose, push, env_dict):
+    """
+    Build images sequentially using Podman (fallback when buildx bake is unavailable).
+    
+    Args:
+        build_plan: ImageBuildPlan with dockerfiles to build
+        docker_bake_dict: Dictionary with build configuration
+        build_target_names: List of target names to build
+        config: BuildConfig object
+        no_cache: Whether to disable cache
+        verbose: Whether to show verbose output
+        push: Whether to push images after building
+        env_dict: Environment variables for build
+    """
+    print(f"Using Podman for sequential builds (buildx bake not available)")
+    
+    no_cache_flag = '--no-cache' if no_cache else ''
+    
+    # Build each target sequentially
+    for target_name in build_target_names:
+        try:
+            target = docker_bake_dict['targets'][target_name]
+            print(f"Building image {target_name}")
+            
+            # Extract build parameters from bake dict
+            dockerfile = target.get('dockerfile', 'Dockerfile')
+            context = target.get('context', '.')
+            tags = target.get('tags', [])
+            build_args = target.get('args', {})
+            
+            if not tags:
+                print(f"Warning: No tags specified for {target_name}, skipping")
+                continue
+            
+            # Construct podman build command
+            tag_args = ' '.join([f'-t {tag}' for tag in tags])
+            build_arg_flags = ' '.join([f'--build-arg {k}={v}' for k, v in build_args.items()])
+            
+            # Set platform if specified
+            platform_flag = ''
+            if config.platform_:
+                platform_str = config.platform_.replace("x86_64", "amd64").replace("aarch64", "arm64")
+                platform_flag = f'--platform linux/{platform_str}'
+            
+            build_cmd = (
+                f'podman build {tag_args} '
+                f'-f {dockerfile} '
+                f'{build_arg_flags} '
+                f'{no_cache_flag} {platform_flag} '
+                f'{context}'
+            )
+            
+            run_shell(build_cmd, capture_output=False, env=env_dict, check=True)
+            
+            # Push if requested
+            if push:
+                for tag in tags:
+                    print(f"Pushing {tag}")
+                    run_shell(f'podman push {tag}', capture_output=False, env=env_dict, check=True)
+                    
+        except subprocess.CalledProcessError as e:
+            raise e
+    
+    # Build final target if specified
+    if config.target_image_name_ and 'final_target' in docker_bake_dict['targets']:
+        try:
+            target = docker_bake_dict['targets']['final_target']
+            print(f"Building final image {config.target_image_name_}")
+            
+            dockerfile = target.get('dockerfile', 'Dockerfile')
+            context = target.get('context', '.')
+            tags = target.get('tags', [])
+            build_args = target.get('args', {})
+            
+            tag_args = ' '.join([f'-t {tag}' for tag in tags])
+            build_arg_flags = ' '.join([f'--build-arg {k}={v}' for k, v in build_args.items()])
+            
+            build_cmd = (
+                f'podman build {tag_args} '
+                f'-f {dockerfile} '
+                f'{build_arg_flags} '
+                f'{no_cache_flag} '
+                f'{context}'
+            )
+            
+            run_shell(build_cmd, capture_output=False, env=env_dict, check=True)
+            
+            if push:
+                for tag in tags:
+                    print(f"Pushing {tag}")
+                    run_shell(f'podman push {tag}', capture_output=False, env=env_dict, check=True)
+                    
+        except subprocess.CalledProcessError as e:
+            raise e
 
 
 def countdown_warning(message, seconds=5):
@@ -830,13 +977,25 @@ def main(image_key_set: List[str],
         no_cache_flag = '--no-cache' if no_cache else ''
         debug_flag = '--debug' if verbose else ''
 
+        # Check if we should use Podman fallback
+        if not supports_buildx():
+            # Podman doesn't support buildx bake, use sequential builds
+            if use_kubernetes_driver or (not build_local and config.remote_builder_):
+                print("Warning: Kubernetes/remote builders are not supported with Podman.")
+                print("Building locally instead.")
+            
+            build_with_podman(build_plan, docker_bake_dict, build_target_names,
+                            config, no_cache, verbose, push, env_dict)
+            return
+
+        # Docker buildx path
         try:
             if not build_local and use_kubernetes_driver:
                 # Use Kubernetes driver - deploys BuildKit pods on-demand in cluster
                 print("Using Kubernetes driver (bypasses NLB, fixes EOF errors)")
                 k8s_arch = "amd64" if config.platform_ in ["x86_64", "amd64"] else "arm64"
                 run_shell(
-                    f'docker buildx create --driver kubernetes --name {builder_name} '
+                    f'{CONTAINER_ENGINE} buildx create --driver kubernetes --name {builder_name} '
                     f'--driver-opt namespace=docker-builder '
                     f'--driver-opt nodeselector=kubernetes.io/arch={k8s_arch} '
                     f'--driver-opt requests.cpu=4 '
@@ -855,7 +1014,7 @@ def main(image_key_set: List[str],
                 )
             elif not build_local and config.remote_builder_:
                 run_shell(
-                    f'docker buildx create --driver remote --name {builder_name} '
+                    f'{CONTAINER_ENGINE} buildx create --driver remote --name {builder_name} '
                     f'{config.remote_builder_}',
                     verbose=True,
                     env=env_dict
@@ -867,7 +1026,7 @@ def main(image_key_set: List[str],
                         seconds=5
                     )
                 run_shell(
-                    f'docker buildx create --name {builder_name}',
+                    f'{CONTAINER_ENGINE} buildx create --name {builder_name}',
                     verbose=True,
                     env=env_dict
                 )
@@ -887,7 +1046,7 @@ def main(image_key_set: List[str],
                         platform_flag = ''
 
                     build_cmd = (
-                        f'docker {debug_flag} buildx bake {target_name} '
+                        f'{CONTAINER_ENGINE} {debug_flag} buildx bake {target_name} '
                         f'{no_cache_flag} {progress_flag} {platform_flag} '
                         f'--builder {builder_name if push else "default"} '
                         f'--provenance=false '
@@ -903,7 +1062,7 @@ def main(image_key_set: List[str],
                     print(f"Building image {config.target_image_name_}")
 
                     final_cmd = (
-                        f'docker {debug_flag} buildx bake final_target '
+                        f'{CONTAINER_ENGINE} {debug_flag} buildx bake final_target '
                         f'{no_cache_flag} {progress_flag} '
                         f'--builder {builder_name if push else "default"} '
                         f'--provenance=false '
@@ -915,7 +1074,7 @@ def main(image_key_set: List[str],
                     raise e
 
         finally:
-            run_shell(f'docker buildx rm {builder_name}', verbose=True, env=env_dict, check=False)
+            run_shell(f'{CONTAINER_ENGINE} buildx rm {builder_name}', verbose=True, env=env_dict, check=False)
 
 
 if __name__ == "__main__":
