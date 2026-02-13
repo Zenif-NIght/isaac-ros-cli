@@ -9,6 +9,7 @@
 
 import argparse
 import hashlib
+import json
 import os
 import platform
 import re
@@ -107,8 +108,6 @@ def docker_login(base_docker_registry_name):
     specified registry in their docker config. It does not attempt to log in
     with empty credentials, which would fail for most registries.
     """
-    import json
-    
     # Check for credentials in docker config
     config_paths = [
         os.path.expanduser('~/.docker/config.json'),
@@ -122,17 +121,31 @@ def docker_login(base_docker_registry_name):
                     config = json.load(f)
                     auths = config.get('auths', {})
                     
-                    # Check for exact match or if registry is part of the auth key
+                    # Normalize the base registry for comparison
+                    base_reg_clean = base_docker_registry_name.replace('https://', '').replace('http://', '').rstrip('/')
+                    
+                    # Check for exact match or if one registry is a prefix of the other
                     for auth_registry in auths.keys():
-                        # Strip https:// prefix if present for comparison
-                        auth_reg_clean = auth_registry.replace('https://', '').replace('http://', '')
-                        base_reg_clean = base_docker_registry_name.replace('https://', '').replace('http://', '')
+                        # Normalize auth registry (also remove /v1 or /v2 suffixes common in docker configs)
+                        auth_reg_clean = auth_registry.replace('https://', '').replace('http://', '').rstrip('/')
+                        # Remove version suffixes like /v1, /v2
+                        auth_reg_clean = auth_reg_clean.replace('/v1', '').replace('/v2', '')
                         
-                        if base_reg_clean in auth_reg_clean or auth_reg_clean in base_reg_clean:
+                        # Docker specific: docker.io and index.docker.io are the same
+                        if base_reg_clean in ['docker.io', 'index.docker.io']:
+                            if auth_reg_clean in ['docker.io', 'index.docker.io']:
+                                if auths[auth_registry].get('auth') or auths[auth_registry].get('username'):
+                                    return True
+                                    
+                        # Match if they're equal or if one is a path under the other
+                        # e.g., "nvcr.io" matches "nvcr.io/nvidia/isaac/ros"
+                        elif (auth_reg_clean == base_reg_clean or
+                              base_reg_clean.startswith(auth_reg_clean + '/') or
+                              auth_reg_clean.startswith(base_reg_clean + '/')):
                             # Found credentials - verify they contain auth data
                             if auths[auth_registry].get('auth') or auths[auth_registry].get('username'):
                                 return True
-            except (json.JSONDecodeError, KeyError, IOError):
+            except (json.JSONDecodeError, IOError):
                 # If config is malformed or unreadable, continue to next path
                 continue
     
