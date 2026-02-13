@@ -12,6 +12,10 @@ import os
 import sys
 import subprocess
 import shlex
+
+# Add src to path to import isaac_ros_cli modules
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../src'))
+
 from build_image_layers import (
     main as build_image_layers,
     check_docker_logins,
@@ -20,6 +24,8 @@ from isaac_ros_common_config_utils import (
     get_isaac_ros_common_config_path,
     get_isaac_ros_common_config_values,
     get_build_order)
+from isaac_ros_cli.container_manager import create_container_manager
+from isaac_ros_cli.container_engine import EngineType
 
 
 def validate_isaac_dir(isaac_dir):
@@ -28,43 +34,52 @@ def validate_isaac_dir(isaac_dir):
         sys.exit(1)
 
 
-def check_user_in_docker_group():
+def check_user_in_container_group(container_manager):
+    """Check if user is in the appropriate container engine group."""
     output = subprocess.check_output(["groups", os.getenv("USER")], universal_newlines=True)
-    if "docker" not in output:
-        print(
-            f"User {os.getenv('USER')} is not a member of the 'docker' group "
-            "and cannot run docker commands without sudo."
-        )
-        print(
-            "Run 'sudo usermod -aG docker $USER && newgrp docker' to add user to "
-            "'docker' group, then re-run this script."
-        )
-        print("See: https://docs.docker.com/engine/install/linux-postinstall/")
-        sys.exit(1)
+    
+    # For Docker, check docker group
+    if container_manager.engine_type == EngineType.DOCKER:
+        if "docker" not in output:
+            print(
+                f"User {os.getenv('USER')} is not a member of the 'docker' group "
+                "and cannot run docker commands without sudo."
+            )
+            print(
+                "Run 'sudo usermod -aG docker $USER && newgrp docker' to add user to "
+                "'docker' group, then re-run this script."
+            )
+            print("See: https://docs.docker.com/engine/install/linux-postinstall/")
+            sys.exit(1)
+    # For Podman rootless, group membership is not required
+    # For Podman rootful, would need to check podman group but that's less common
 
 
-def check_docker_running():
+def check_container_engine_running(container_manager):
+    """Check if the container engine is running."""
     try:
-        subprocess.check_output(["docker", "ps"], stderr=subprocess.DEVNULL)
+        container_manager.run_command(["ps"], stderr=subprocess.DEVNULL, check=True)
     except subprocess.CalledProcessError:
+        engine_name = container_manager.engine_type.value
         print(
-            "Unable to run docker commands. If you have recently added $USER to "
-            "'docker' group, you may need to log out and log back in for it to take effect."
+            f"Unable to run {engine_name} commands. If you have recently added $USER to "
+            f"'{engine_name}' group, you may need to log out and log back in for it to take effect."
         )
-        print("Otherwise, please check your Docker installation.")
+        print(f"Otherwise, please check your {engine_name.capitalize()} installation.")
         sys.exit(1)
 
 
-def check_docker_buildx_containerd_cache_enabled():
-    try:
-        subprocess.check_output(["docker", "buildx", "inspect", "--bootstrap"])
-    except subprocess.CalledProcessError:
-        print(
-            "Unable to detect docker buildx containerd cache. "
-            "Please follow these instructions: "
-            "https://docs.docker.com/engine/storage/containerd/#enable-containerd-image-store-on-docker-engine"  # noqa:E501
-        )
-        sys.exit(1)
+def check_docker_buildx_containerd_cache_enabled(container_manager):
+    """Check if buildx/build is available for the container engine."""
+    if container_manager.engine_type == EngineType.DOCKER:
+        if not container_manager.check_buildx_available():
+            print(
+                "Unable to detect docker buildx containerd cache. "
+                "Please follow these instructions: "
+                "https://docs.docker.com/engine/storage/containerd/#enable-containerd-image-store-on-docker-engine"  # noqa:E501
+            )
+            sys.exit(1)
+    # Podman doesn't require buildx check
 
 
 def check_git_lfs_installed():
@@ -110,10 +125,10 @@ def check_lfs_files(isaac_dir):
         pass
 
 
-def remove_exited_container(container_name):
+def remove_exited_container(container_name, container_manager):
     output = subprocess.check_output(
         [
-            "docker",
+            container_manager.engine_bin,
             "ps",
             "-a",
             "--quiet",
@@ -124,13 +139,13 @@ def remove_exited_container(container_name):
         ]
     )
     if output:
-        subprocess.run(["docker", "rm", container_name], stdout=subprocess.DEVNULL)
+        subprocess.run([container_manager.engine_bin, "rm", container_name], stdout=subprocess.DEVNULL)
 
 
-def attach_to_running_container(container_name):
+def attach_to_running_container(container_name, container_manager):
     output = subprocess.check_output(
         [
-            "docker",
+            container_manager.engine_bin,
             "ps",
             "-a",
             "--quiet",
@@ -143,13 +158,13 @@ def attach_to_running_container(container_name):
     if output:
         print(f"Attaching to running container: {container_name}")
         isaac_ros_ws = subprocess.check_output(
-            ["docker", "exec", container_name, "printenv", "ISAAC_ROS_WS"],
+            [container_manager.engine_bin, "exec", container_name, "printenv", "ISAAC_ROS_WS"],
             universal_newlines=True
         ).strip()
-        print(f"Docker workspace: {isaac_ros_ws}")
+        print(f"Container workspace: {isaac_ros_ws}")
         subprocess.run(
             [
-                "docker", "exec", "-i", "-t",
+                container_manager.engine_bin, "exec", "-i", "-t",
                 "-e", "TERM=xterm-256color",
                 "-e", "COLORTERM=truecolor",
                 "-e", "FORCE_COLOR=true",
@@ -167,15 +182,15 @@ def attach_to_running_container(container_name):
         sys.exit(0)
 
 
-def make_docker_image_available(base_name, cached_image_name):
+def make_docker_image_available(base_name, cached_image_name, container_manager):
     pull_result = subprocess.run(
-        [f"docker pull {base_name}"],
+        [f"{container_manager.engine_bin} pull {base_name}"],
         shell=True,
         env={**os.environ, "TERM": "xterm-256color", "COLORTERM": "truecolor"}
     )
 
     local_image_result = subprocess.run(
-        ["docker", "image", "inspect", base_name],
+        [container_manager.engine_bin, "image", "inspect", base_name],
         capture_output=True,
         env={**os.environ, "TERM": "xterm-256color", "COLORTERM": "truecolor"}
     )
@@ -183,13 +198,13 @@ def make_docker_image_available(base_name, cached_image_name):
     if pull_result.returncode == 0 or local_image_result.returncode == 0:
         # Remove any existing cached image
         subprocess.run(
-            ["docker", "rmi", cached_image_name],
+            [container_manager.engine_bin, "rmi", cached_image_name],
             stderr=subprocess.DEVNULL,
             stdout=subprocess.DEVNULL
         )
         # Tag the image as our cached image name
         tag_result = subprocess.run(
-            ["docker", "tag", base_name, cached_image_name]
+            [container_manager.engine_bin, "tag", base_name, cached_image_name]
         )
 
         return tag_result.returncode == 0
@@ -207,19 +222,19 @@ def get_existing_bash_configs():
     return existing_configs
 
 
-def get_docker_args(platform):
+def get_container_args(platform, container_manager):
     # Return arguments as complete flag-value pairs for shell=True usage
     home_path = os.path.expanduser('~')
-    docker_args = [
+    container_args = [
         "-v /tmp/.X11-unix:/tmp/.X11-unix",
         f"-v {shlex.quote(home_path)}/.Xauthority:/home/admin/.Xauthority:rw",
     ]
     # Add existing bash config files
     for config in get_existing_bash_configs():
-        docker_args.append(
+        container_args.append(
             f"-v {shlex.quote(home_path)}/{config}:/home/admin/{config}:ro"
         )
-    docker_args.extend([
+    container_args.extend([
         "-e DISPLAY",
         "-e NVIDIA_VISIBLE_DEVICES=all",
         "-e NVIDIA_DRIVER_CAPABILITIES=all",
@@ -232,11 +247,11 @@ def get_docker_args(platform):
     if platform == "aarch64":
         if "SSH_AUTH_SOCK" in os.environ:
             ssh_auth_sock = os.environ['SSH_AUTH_SOCK']
-            docker_args.extend([
+            container_args.extend([
                 f"-v {shlex.quote(ssh_auth_sock)}:/ssh-agent",
                 "-e SSH_AUTH_SOCK=/ssh-agent",
             ])
-        docker_args.extend([
+        container_args.extend([
             "-v /usr/bin/tegrastats:/usr/bin/tegrastats",
             "-v /sys/kernel/debug:/sys/kernel/debug:ro",  # Required for tegrastats
             "-v /tmp/:/tmp/",
@@ -253,14 +268,14 @@ def get_docker_args(platform):
             ).strip()
             if output:
                 group_id = output.split(":")[2]
-                docker_args.extend([
+                container_args.extend([
                     "-v /run/jtop.sock:/run/jtop.sock:ro",
                     f"--group-add {group_id}",
                 ])
         except subprocess.CalledProcessError:
             pass
 
-    return docker_args
+    return container_args
 
 
 def realpath(path):
@@ -320,16 +335,16 @@ def load_docker_args_from_file():
     return []
 
 
-def run_docker_container(args, container_name, base_name, isaac_dir):
-    docker_args = get_docker_args(args.platform)
+def run_container(args, container_name, base_name, isaac_dir, container_manager):
+    container_args = get_container_args(args.platform, container_manager)
     file_args = load_docker_args_from_file()
 
-    docker_args.extend(file_args)
+    container_args.extend(file_args)
 
     # Build the command as a single string for shell=True
     # Use proper shell quoting for arguments that might contain spaces
-    docker_command_parts = [
-        "docker run -it --rm",
+    command_parts = [
+        f"{container_manager.engine_bin} run -it --rm",
         "--privileged",
         "--network host",
         "--ipc=host",
@@ -341,33 +356,46 @@ def run_docker_container(args, container_name, base_name, isaac_dir):
 
     # Pass ISAAC_ROS_PLATFORM if specified
     if args.isaac_ros_platform:
-        docker_command_parts.append(
+        command_parts.append(
             f"-e ISAAC_ROS_PLATFORM={shlex.quote(args.isaac_ros_platform)}"
         )
 
-    # Add Docker arguments as strings
-    docker_command_parts.extend(docker_args)
+    # Add GPU flags based on container engine
+    gpu_flags = container_manager.get_gpu_flags()
+    command_parts.extend(gpu_flags)
+    
+    # Add runtime-specific flags
+    runtime_flags = container_manager.get_runtime_flags()
+    command_parts.extend(runtime_flags)
 
-    # Add remaining arguments
-    docker_command_parts.extend([
-        f"-v {shlex.quote(isaac_dir)}:/workspaces/isaac_ros-dev",
-        "-v /etc/localtime:/etc/localtime:ro",
+    # Add container arguments as strings
+    command_parts.extend(container_args)
+
+    # Add remaining arguments with volume mount formatting
+    volume_mount_suffix = ""
+    if container_manager.engine_type == EngineType.PODMAN:
+        from isaac_ros_cli.container_engine import is_selinux_enabled
+        if is_selinux_enabled():
+            volume_mount_suffix = ":Z"
+    
+    command_parts.extend([
+        f"-v {shlex.quote(isaac_dir)}:/workspaces/isaac_ros-dev{volume_mount_suffix}",
+        f"-v /etc/localtime:/etc/localtime:ro{volume_mount_suffix}",
         f"--name {shlex.quote(container_name)}",
-        "--runtime nvidia",
         "--entrypoint /usr/local/bin/scripts/workspace-entrypoint.sh",
         shlex.quote(base_name),
         "/bin/bash"
     ])
 
     # Join all command parts with spaces to create a single command string
-    docker_command_str = " ".join(docker_command_parts)
+    command_str = " ".join(command_parts)
 
     print(f"Running {container_name}")
     if args.verbose:
-        print(docker_command_str)
+        print(command_str)
 
     subprocess.run(
-        docker_command_str,
+        command_str,
         shell=True,
         env={
             **os.environ,
@@ -497,6 +525,27 @@ def main():
     config = get_isaac_ros_common_config_values(config_path)
     platform = args.platform
 
+    # Load Isaac ROS CLI config to get container engine preference
+    try:
+        import yaml
+        cli_config_path = "/usr/share/isaac-ros-cli/config.yaml"
+        if os.path.exists(cli_config_path):
+            with open(cli_config_path, 'r') as f:
+                cli_config = yaml.safe_load(f)
+                engine_preference = cli_config.get('container_engine', 'auto')
+        else:
+            engine_preference = 'auto'
+    except Exception:
+        engine_preference = 'auto'
+    
+    # Create container manager
+    try:
+        container_manager = create_container_manager(engine_preference)
+        print(f"Using container engine: {container_manager.engine_type.value}")
+    except RuntimeError as e:
+        print(f"Error: {e}")
+        sys.exit(1)
+
     file_arch = (
         'amd64' if platform == 'x86_64'
         else 'arm64' if platform == 'aarch64'
@@ -511,13 +560,13 @@ def main():
     container_name = args.container_name
 
     validate_isaac_dir(isaac_dir)
-    check_user_in_docker_group()
-    check_docker_running()
+    check_user_in_container_group(container_manager)
+    check_container_engine_running(container_manager)
     check_git_lfs_installed()
     check_lfs_files(isaac_dir)
 
-    remove_exited_container(container_name)
-    attach_to_running_container(container_name)
+    remove_exited_container(container_name, container_manager)
+    attach_to_running_container(container_name, container_manager)
 
     if args.no_cache:
         cache_from_registry_name = "local"
@@ -534,20 +583,20 @@ def main():
         # Check if cached image exists before using it
 
         cached_image_exists = subprocess.run(
-            ["docker", "image", "inspect", cached_image_name],
+            [container_manager.engine_bin, "image", "inspect", cached_image_name],
             capture_output=True
         ).returncode == 0
 
         if not cached_image_exists:
             print("No cached image found. "
-                  "Perhaps you cleaned docker cache, or you haven't yet "
+                  "Perhaps you cleaned container cache, or you haven't yet "
                   "run run_dev.py on this system?")
             sys.exit(1)
         base_name = cached_image_name
 
-    elif not make_docker_image_available(base_name, cached_image_name):
+    elif not make_docker_image_available(base_name, cached_image_name, container_manager):
         if not (args.build or args.build_local):
-            print(f"Error: Docker image {base_name} not found.")
+            print(f"Error: Container image {base_name} not found.")
             print("Use --build to build remotely or --build-local to build locally.")
             sys.exit(1)
 
@@ -566,13 +615,13 @@ def main():
             build_args['push'] = True
 
         build_image_layers(**build_args)
-        if not make_docker_image_available(base_name, cached_image_name):
+        if not make_docker_image_available(base_name, cached_image_name, container_manager):
             print(f"Error: Failed to build or pull image {base_name}")
             sys.exit(1)
 
     print(f"Using image: {base_name}")
 
-    run_docker_container(args, container_name, base_name, isaac_dir)
+    run_container(args, container_name, base_name, isaac_dir, container_manager)
 
 
 if __name__ == "__main__":

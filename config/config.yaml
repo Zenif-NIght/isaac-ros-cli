@@ -1,5 +1,9 @@
 version: 2
 
+# Container engine configuration
+# Options: 'auto' (detect), 'docker', or 'podman'
+container_engine: auto
+
 docker:
   image:
     base_image_keys:
