@@ -6,3 +6,15 @@ debian/*.substvars
 debian/*.debhelper.log
 debian/*-stamp
 debian/files
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
