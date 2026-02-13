@@ -25,7 +25,7 @@ from isaac_ros_common_config_utils import (
     get_isaac_ros_common_config_values,
     get_build_order)
 from isaac_ros_cli.container_manager import create_container_manager
-from isaac_ros_cli.container_engine import EngineType
+from isaac_ros_cli.container_engine import EngineType, is_selinux_enabled
 
 
 def validate_isaac_dir(isaac_dir):
@@ -371,18 +371,14 @@ def run_container(args, container_name, base_name, isaac_dir, container_manager)
     # Add container arguments as strings
     command_parts.extend(container_args)
 
-    # Determine SELinux suffix for volumes
-    # Only add :Z for writable volumes, not read-only
-    selinux_suffix_rw = ""
-    selinux_suffix_ro = ""
-    if container_manager.engine_type == EngineType.PODMAN:
-        from isaac_ros_cli.container_engine import is_selinux_enabled
-        if is_selinux_enabled():
-            selinux_suffix_rw = ":Z"
-            # For read-only mounts, we don't add :Z as it's not needed
+    # Determine SELinux suffix for writable volumes
+    # For Podman with SELinux, add :Z to writable volumes to allow container access
+    selinux_suffix = ""
+    if container_manager.engine_type == EngineType.PODMAN and is_selinux_enabled():
+        selinux_suffix = ":Z"
     
     command_parts.extend([
-        f"-v {shlex.quote(isaac_dir)}:/workspaces/isaac_ros-dev{selinux_suffix_rw}",
+        f"-v {shlex.quote(isaac_dir)}:/workspaces/isaac_ros-dev{selinux_suffix}",
         f"-v /etc/localtime:/etc/localtime:ro",
         f"--name {shlex.quote(container_name)}",
         "--entrypoint /usr/local/bin/scripts/workspace-entrypoint.sh",
@@ -529,9 +525,13 @@ def main():
     platform = args.platform
 
     # Load Isaac ROS CLI config to get container engine preference
+    # Support environment variable override for testing and alternative installations
     try:
         import yaml
-        cli_config_path = "/usr/share/isaac-ros-cli/config.yaml"
+        cli_config_path = os.environ.get(
+            'ISAAC_ROS_CLI_CONFIG',
+            '/usr/share/isaac-ros-cli/config.yaml'
+        )
         if os.path.exists(cli_config_path):
             with open(cli_config_path, 'r') as f:
                 cli_config = yaml.safe_load(f)

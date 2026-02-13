@@ -51,7 +51,9 @@ class ContainerManager(ABC):
         container_path : str
             Path in the container.
         mode : str
-            Mount mode (e.g., 'rw', 'ro').
+            Mount mode (e.g., 'rw', 'ro'). Defaults to 'rw'.
+            Note: 'rw' mode is the default for container engines and may be omitted
+            from the output string.
         
         Returns
         -------
@@ -59,9 +61,12 @@ class ContainerManager(ABC):
             Formatted volume mount string.
         """
         suffix = get_volume_mount_suffix(self.engine_type)
-        if mode and mode != "rw":
+        # For 'rw' mode, we can omit it as it's the default, but include suffix if needed
+        if mode == "rw":
+            return f"{host_path}:{container_path}{suffix}"
+        else:
+            # For other modes (ro, z, Z, etc.), include the mode
             return f"{host_path}:{container_path}:{mode}{suffix}"
-        return f"{host_path}:{container_path}{suffix}"
     
     def run_command(self, args: List[str], **kwargs) -> subprocess.CompletedProcess:
         """
