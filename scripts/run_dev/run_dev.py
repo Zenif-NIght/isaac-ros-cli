@@ -169,7 +169,7 @@ def attach_to_running_container(container_name):
 
 def make_docker_image_available(base_name, cached_image_name):
     pull_result = subprocess.run(
-        [f"docker pull {base_name}"],
+        f"docker pull {base_name}",
         shell=True,
         env={**os.environ, "TERM": "xterm-256color", "COLORTERM": "truecolor"}
     )

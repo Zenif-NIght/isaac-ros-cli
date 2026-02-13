@@ -101,22 +101,42 @@ def run_shell(command: str,
 
 def docker_login(base_docker_registry_name):
     """
-    Attempts to log in to a Docker registry using the provided registry name.
+    Checks if credentials exist for a Docker/Podman registry.
+    
+    This function checks if the user already has credentials stored for the
+    specified registry in their docker config. It does not attempt to log in
+    with empty credentials, which would fail for most registries.
     """
-    try:
-        subprocess.run(
-            ['docker', 'login', base_docker_registry_name,
-             '--username', '', '--password', ''],
-            check=True,
-            shell=True,
-            stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        return True
-    except subprocess.CalledProcessError:
-        print(f"Could not login to {base_docker_registry_name}")
-        return False
+    import json
+    
+    # Check for credentials in docker config
+    config_paths = [
+        os.path.expanduser('~/.docker/config.json'),
+        os.path.expanduser('~/.dockercfg'),
+    ]
+    
+    for config_path in config_paths:
+        if os.path.exists(config_path):
+            try:
+                with open(config_path, 'r') as f:
+                    config = json.load(f)
+                    auths = config.get('auths', {})
+                    
+                    # Check for exact match or if registry is part of the auth key
+                    for auth_registry in auths.keys():
+                        # Strip https:// prefix if present for comparison
+                        auth_reg_clean = auth_registry.replace('https://', '').replace('http://', '')
+                        base_reg_clean = base_docker_registry_name.replace('https://', '').replace('http://', '')
+                        
+                        if base_reg_clean in auth_reg_clean or auth_reg_clean in base_reg_clean:
+                            # Found credentials - verify they contain auth data
+                            if auths[auth_registry].get('auth') or auths[auth_registry].get('username'):
+                                return True
+            except (json.JSONDecodeError, KeyError, IOError):
+                # If config is malformed or unreadable, continue to next path
+                continue
+    
+    return False
 
 
 def check_docker_logins(base_docker_registry_names, fail_on_anon):
@@ -129,8 +149,11 @@ def check_docker_logins(base_docker_registry_names, fail_on_anon):
             return base_docker_registry_name
         print(f"Could not login to {base_docker_registry_name}.")
     if fail_on_anon:
+        registries_str = ', '.join(base_docker_registry_names)
         raise Exception(
-            'Could not login to any of the specified docker registries.'
+            f'Could not login to any of the specified docker registries: {registries_str}\n'
+            f'Please login using: docker login <registry>\n'
+            f'Or use --no-cache flag to build without registry cache.'
         )
     return None
 
