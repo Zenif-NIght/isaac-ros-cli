@@ -38,10 +38,12 @@ from isaac_ros_cli.container_engine import (
 # Detect container engine using the shared module
 # This respects the container_engine setting in config.yaml
 try:
-    _engine_type, CONTAINER_ENGINE = _detect_engine()
-except RuntimeError:
+    ENGINE_TYPE, CONTAINER_ENGINE = _detect_engine()
+except RuntimeError as e:
     # Fallback to docker if detection fails (will fail later with clear error)
-    _engine_type = EngineType.DOCKER
+    print(f"Warning: Container engine detection failed: {e}")
+    print("Falling back to 'docker' (will fail later if docker is not available)")
+    ENGINE_TYPE = EngineType.DOCKER
     CONTAINER_ENGINE = 'docker'
 
 
@@ -52,7 +54,7 @@ def supports_buildx():
     Returns:
         bool: True if buildx is supported (Docker), False otherwise (Podman)
     """
-    return _engine_type == EngineType.DOCKER
+    return ENGINE_TYPE == EngineType.DOCKER
 
 
 # -----------------------------------------------------------------------------
@@ -700,8 +702,8 @@ def build_with_podman(build_plan, docker_bake_dict, build_target_names,
         env_dict: Environment variables for build
     """
     # Safety check - this function should only be called for Podman
-    if _engine_type != EngineType.PODMAN:
-        raise RuntimeError(f"build_with_podman called but engine is {_engine_type}")
+    if ENGINE_TYPE != EngineType.PODMAN:
+        raise RuntimeError(f"build_with_podman called but engine is {ENGINE_TYPE}")
     
     print(f"Using {CONTAINER_ENGINE} for sequential builds (buildx bake not available)")
     
