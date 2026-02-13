@@ -60,9 +60,13 @@ class ContainerManager(ABC):
         str
             Formatted volume mount string.
         """
-        suffix = get_volume_mount_suffix(self.engine_type)
-        # For 'rw' mode, we can omit it as it's the default, but include suffix if needed
-        if mode == "rw":
+        # Determine if this is a writable mount for SELinux context
+        writable = (mode == "rw" or mode is None or mode == "")
+        suffix = get_volume_mount_suffix(self.engine_type, writable=writable)
+        
+        # Build the mount string
+        if mode == "rw" or mode is None or mode == "":
+            # For 'rw' mode, we can omit it as it's the default
             return f"{host_path}:{container_path}{suffix}"
         else:
             # For other modes (ro, z, Z, etc.), include the mode

@@ -151,7 +151,7 @@ def is_selinux_enabled() -> bool:
         return False
 
 
-def get_volume_mount_suffix(engine_type: EngineType) -> str:
+def get_volume_mount_suffix(engine_type: EngineType, writable: bool = True) -> str:
     """
     Get the volume mount suffix for SELinux context.
     
@@ -159,12 +159,16 @@ def get_volume_mount_suffix(engine_type: EngineType) -> str:
     ----------
     engine_type : EngineType
         The container engine type.
+    writable : bool
+        Whether the volume mount is writable. Defaults to True.
+        SELinux relabeling (:Z) is only needed for writable volumes.
     
     Returns
     -------
     str
-        The volume mount suffix (e.g., ':Z' for Podman with SELinux, '' otherwise).
+        The volume mount suffix (e.g., ':Z' for Podman with SELinux on writable volumes, '' otherwise).
     """
-    if engine_type == EngineType.PODMAN and is_selinux_enabled():
+    # Only add SELinux context for Podman with writable volumes
+    if engine_type == EngineType.PODMAN and is_selinux_enabled() and writable:
         return ":Z"
     return ""

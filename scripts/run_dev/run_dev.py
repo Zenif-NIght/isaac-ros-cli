@@ -12,9 +12,10 @@ import os
 import sys
 import subprocess
 import shlex
+import yaml
 
 # Add src to path to import isaac_ros_cli modules
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), '../../src'))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../src')))
 
 from build_image_layers import (
     main as build_image_layers,
@@ -377,9 +378,10 @@ def run_container(args, container_name, base_name, isaac_dir, container_manager)
     if container_manager.engine_type == EngineType.PODMAN and is_selinux_enabled():
         selinux_suffix = ":Z"
     
+    # Note: SELinux :Z is only needed for writable mounts, not read-only
     command_parts.extend([
         f"-v {shlex.quote(isaac_dir)}:/workspaces/isaac_ros-dev{selinux_suffix}",
-        f"-v /etc/localtime:/etc/localtime:ro",
+        "-v /etc/localtime:/etc/localtime:ro",
         f"--name {shlex.quote(container_name)}",
         "--entrypoint /usr/local/bin/scripts/workspace-entrypoint.sh",
         shlex.quote(base_name),
@@ -526,20 +528,21 @@ def main():
 
     # Load Isaac ROS CLI config to get container engine preference
     # Support environment variable override for testing and alternative installations
-    try:
-        import yaml
-        cli_config_path = os.environ.get(
-            'ISAAC_ROS_CLI_CONFIG',
-            '/usr/share/isaac-ros-cli/config.yaml'
-        )
-        if os.path.exists(cli_config_path):
+    engine_preference = 'auto'
+    cli_config_path = os.environ.get(
+        'ISAAC_ROS_CLI_CONFIG',
+        '/usr/share/isaac-ros-cli/config.yaml'
+    )
+    
+    if os.path.exists(cli_config_path):
+        try:
             with open(cli_config_path, 'r') as f:
                 cli_config = yaml.safe_load(f)
-                engine_preference = cli_config.get('container_engine', 'auto')
-        else:
-            engine_preference = 'auto'
-    except Exception:
-        engine_preference = 'auto'
+                if cli_config and isinstance(cli_config, dict):
+                    engine_preference = cli_config.get('container_engine', 'auto')
+        except (IOError, yaml.YAMLError) as e:
+            print(f"Warning: Could not load config from {cli_config_path}: {e}")
+            print("Falling back to auto-detection")
     
     # Create container manager
     try:
