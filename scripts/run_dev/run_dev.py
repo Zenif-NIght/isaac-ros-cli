@@ -371,16 +371,19 @@ def run_container(args, container_name, base_name, isaac_dir, container_manager)
     # Add container arguments as strings
     command_parts.extend(container_args)
 
-    # Add remaining arguments with volume mount formatting
-    volume_mount_suffix = ""
+    # Determine SELinux suffix for volumes
+    # Only add :Z for writable volumes, not read-only
+    selinux_suffix_rw = ""
+    selinux_suffix_ro = ""
     if container_manager.engine_type == EngineType.PODMAN:
         from isaac_ros_cli.container_engine import is_selinux_enabled
         if is_selinux_enabled():
-            volume_mount_suffix = ":Z"
+            selinux_suffix_rw = ":Z"
+            # For read-only mounts, we don't add :Z as it's not needed
     
     command_parts.extend([
-        f"-v {shlex.quote(isaac_dir)}:/workspaces/isaac_ros-dev{volume_mount_suffix}",
-        f"-v /etc/localtime:/etc/localtime:ro{volume_mount_suffix}",
+        f"-v {shlex.quote(isaac_dir)}:/workspaces/isaac_ros-dev{selinux_suffix_rw}",
+        f"-v /etc/localtime:/etc/localtime:ro",
         f"--name {shlex.quote(container_name)}",
         "--entrypoint /usr/local/bin/scripts/workspace-entrypoint.sh",
         shlex.quote(base_name),
