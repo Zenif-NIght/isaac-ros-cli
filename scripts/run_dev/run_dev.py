@@ -30,7 +30,12 @@ def validate_isaac_dir(isaac_dir):
 
 
 def check_user_in_docker_group():
-    """Check if user is in docker/podman group (for rootless container operations)."""
+    """
+    Check if user is in docker group (required for Docker; Podman typically runs rootless).
+    
+    For Docker: Verifies user is in 'docker' group for rootless operation.
+    For Podman: Skips check as Podman runs rootless by default.
+    """
     output = subprocess.check_output(["groups", os.getenv("USER")], universal_newlines=True)
     
     # For Docker, check docker group

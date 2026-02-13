@@ -717,7 +717,11 @@ def build_with_podman(build_plan, docker_bake_dict, build_target_names,
         push: Whether to push images after building
         env_dict: Environment variables for build
     """
-    print(f"Using Podman for sequential builds (buildx bake not available)")
+    # Safety check - this function should only be called for Podman
+    if CONTAINER_ENGINE != 'podman':
+        raise RuntimeError(f"build_with_podman called but engine is {CONTAINER_ENGINE}")
+    
+    print(f"Using {CONTAINER_ENGINE} for sequential builds (buildx bake not available)")
     
     no_cache_flag = '--no-cache' if no_cache else ''
     
@@ -737,7 +741,7 @@ def build_with_podman(build_plan, docker_bake_dict, build_target_names,
                 print(f"Warning: No tags specified for {target_name}, skipping")
                 continue
             
-            # Construct podman build command
+            # Construct build command
             tag_args = ' '.join([f'-t {tag}' for tag in tags])
             build_arg_flags = ' '.join([f'--build-arg {k}={v}' for k, v in build_args.items()])
             
@@ -748,7 +752,7 @@ def build_with_podman(build_plan, docker_bake_dict, build_target_names,
                 platform_flag = f'--platform linux/{platform_str}'
             
             build_cmd = (
-                f'podman build {tag_args} '
+                f'{CONTAINER_ENGINE} build {tag_args} '
                 f'-f {dockerfile} '
                 f'{build_arg_flags} '
                 f'{no_cache_flag} {platform_flag} '
@@ -761,7 +765,7 @@ def build_with_podman(build_plan, docker_bake_dict, build_target_names,
             if push:
                 for tag in tags:
                     print(f"Pushing {tag}")
-                    run_shell(f'podman push {tag}', capture_output=False, env=env_dict, check=True)
+                    run_shell(f'{CONTAINER_ENGINE} push {tag}', capture_output=False, env=env_dict, check=True)
                     
         except subprocess.CalledProcessError as e:
             raise e
@@ -781,7 +785,7 @@ def build_with_podman(build_plan, docker_bake_dict, build_target_names,
             build_arg_flags = ' '.join([f'--build-arg {k}={v}' for k, v in build_args.items()])
             
             build_cmd = (
-                f'podman build {tag_args} '
+                f'{CONTAINER_ENGINE} build {tag_args} '
                 f'-f {dockerfile} '
                 f'{build_arg_flags} '
                 f'{no_cache_flag} '
@@ -793,7 +797,7 @@ def build_with_podman(build_plan, docker_bake_dict, build_target_names,
             if push:
                 for tag in tags:
                     print(f"Pushing {tag}")
-                    run_shell(f'podman push {tag}', capture_output=False, env=env_dict, check=True)
+                    run_shell(f'{CONTAINER_ENGINE} push {tag}', capture_output=False, env=env_dict, check=True)
                     
         except subprocess.CalledProcessError as e:
             raise e
