@@ -23,44 +23,26 @@ from typing import Dict, List, Tuple
 import termcolor
 import yaml
 
+# Add src to path to import isaac_ros_cli modules
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../../src')))
+
+from isaac_ros_cli.container_engine import (
+    detect_container_engine as _detect_engine,
+    EngineType
+)
+
 
 # -----------------------------------------------------------------------------
 # Container Engine Detection
 # -----------------------------------------------------------------------------
-def detect_container_engine():
-    """
-    Detect which container engine is available (docker or podman).
-    
-    Returns:
-        str: 'docker' if docker is available, 'podman' if only podman is available,
-             or 'docker' as default if neither is found (will fail later with clear error)
-    """
-    # Check for docker first (preferred if both are available)
-    try:
-        subprocess.run(['docker', '--version'], 
-                      capture_output=True, 
-                      check=True,
-                      timeout=5)
-        return 'docker'
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    
-    # Check for podman
-    try:
-        subprocess.run(['podman', '--version'], 
-                      capture_output=True, 
-                      check=True,
-                      timeout=5)
-        return 'podman'
-    except (subprocess.CalledProcessError, FileNotFoundError, subprocess.TimeoutExpired):
-        pass
-    
-    # Default to docker (will fail later with appropriate error)
-    return 'docker'
-
-
-# Global variable to cache the detected engine
-CONTAINER_ENGINE = detect_container_engine()
+# Detect container engine using the shared module
+# This respects the container_engine setting in config.yaml
+try:
+    _engine_type, CONTAINER_ENGINE = _detect_engine()
+except RuntimeError:
+    # Fallback to docker if detection fails (will fail later with clear error)
+    _engine_type = EngineType.DOCKER
+    CONTAINER_ENGINE = 'docker'
 
 
 def supports_buildx():
@@ -70,7 +52,7 @@ def supports_buildx():
     Returns:
         bool: True if buildx is supported (Docker), False otherwise (Podman)
     """
-    return CONTAINER_ENGINE == 'docker'
+    return _engine_type == EngineType.DOCKER
 
 
 # -----------------------------------------------------------------------------
@@ -718,8 +700,8 @@ def build_with_podman(build_plan, docker_bake_dict, build_target_names,
         env_dict: Environment variables for build
     """
     # Safety check - this function should only be called for Podman
-    if CONTAINER_ENGINE != 'podman':
-        raise RuntimeError(f"build_with_podman called but engine is {CONTAINER_ENGINE}")
+    if _engine_type != EngineType.PODMAN:
+        raise RuntimeError(f"build_with_podman called but engine is {_engine_type}")
     
     print(f"Using {CONTAINER_ENGINE} for sequential builds (buildx bake not available)")
     

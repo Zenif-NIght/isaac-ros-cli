@@ -20,8 +20,7 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../.
 from build_image_layers import (
     main as build_image_layers,
     check_docker_logins,
-    get_image_name,
-    CONTAINER_ENGINE)
+    get_image_name)
 from isaac_ros_common_config_utils import (
     get_isaac_ros_common_config_path,
     get_isaac_ros_common_config_values,
